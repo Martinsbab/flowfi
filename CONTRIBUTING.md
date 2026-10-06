@@ -355,7 +355,17 @@ Keep branch names short and descriptive.
 
 # Commit Guidelines & Hooks
 
-This repository uses **Husky** for commit hooks.
+This repository uses **Husky** for commit hooks, with **lint-staged** running checks
+only against the files you staged:
+
+| Staged files | Check |
+| --- | --- |
+| `frontend/**/*.{ts,tsx,js,jsx}` | ESLint |
+| `contracts/**/*.rs` | `cargo fmt --check` + `cargo clippy -D warnings` |
+
+Rust checks are skipped automatically when Cargo is not installed, so a
+JavaScript-only contributor is never blocked. Install a Rust toolchain
+(`rustup`) to have them enforced locally before CI does.
 
 Before committing, ensure:
 
@@ -471,6 +481,47 @@ Be collaborative.
 Be constructive.
 
 ---
+
+
+
+---
+
+# 🤝 Contributor Badges
+
+This project uses the [all-contributors](https://github.com/all-contributors/all-contributors) specification to recognize contributors.
+
+## Triggering the Bot
+
+After your pull request is merged or closed, comment on the merged PR or issue:
+
+```
+@all-contributors please add @<your-username> for code
+```
+
+The bot will add your profile to the Contributors table in the root `README.md`.
+
+## Adding Sub-Package READMEs
+
+Currently, only the root `README.md` has a Contributors section. If you add a Contributors section to a sub-package README (e.g., `backend/README.md`, `frontend/README.md`, `contracts/README.md`), update `.all-contributorsrc` in the repo root to include the additional path:
+
+```json
+"files": [
+  "README.md",
+  "backend/README.md"
+]
+```
+
+## Available Contribution Types
+
+- `code` — Code contributions
+- `doc` — Documentation
+- `design` — Design
+- `bug` — Bug reports
+- `review` — Pull Request reviews
+- `test` — Testing
+- `infra` — Infrastructure / DevOps
+- `ideas` — Ideas & planning
+
 
 # Final Notes
 
