@@ -1,12 +1,12 @@
 # Security Policy Implementation Summary
 
-This document summarizes the security policy implementation for FlowFi and provides next steps for repository administrators.
+This document is a **maintenance and onboarding guide** for repository administrators and contributors. It tracks which security measures have been implemented and what steps remain. It is not a replacement for the security policy itself. For the canonical security policy (reporting guidelines, supported versions, response timelines), see [SECURITY.md](SECURITY.md). For the GitHub security setup checklist, see [.github/SECURITY_SETUP_CHECKLIST.md](.github/SECURITY_SETUP_CHECKLIST.md).
 
 ## ✅ Completed Tasks
 
 ### 1. Core Security Policy
 - **SECURITY.md**: Comprehensive security policy with reporting guidelines, supported versions, and response timelines
-- **Contact Methods**: Multiple reporting channels including GitHub Security Advisories and email
+- **Contact Methods**: Reporting via GitHub Security Advisories, with community Telegram or GitHub Discussions as private-contact fallbacks (no email address is configured)
 - **Disclosure Policy**: Clear responsible disclosure guidelines
 
 ### 2. Documentation Updates
@@ -55,8 +55,7 @@ This document summarizes the security policy implementation for FlowFi and provi
 ### Optional Enhancements
 
 1. **Set up Security Email**
-   - Configure `security@flowfi.dev` or similar
-   - Update SECURITY.md with actual contact information
+   - Email is not currently a reporting channel. If one is configured (e.g. `security@flowfi.dev`), add it to SECURITY.md and update the Contact Methods line above
 
 2. **Bug Bounty Program**
    - Consider implementing a formal bug bounty program

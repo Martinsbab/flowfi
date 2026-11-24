@@ -16,6 +16,8 @@ FlowFi allows users to create continuous payment streams and recurring subscript
 - **Recurring Subscriptions**: Automate monthly or weekly payments.
 - **Soroban Powered**: Secure and efficient execution on Stellar's smart contract platform.
 
+
+
 ## Project Structure
 
 ```
@@ -25,8 +27,9 @@ flowfi/
 │   ├── stream_contract/  # Core streaming logic
 ├── frontend/             # Next.js + Tailwind CSS frontend
 ├── docs/                 # Documentation
-│   ├── ARCHITECTURE.md   # Architecture overview
-│   └── DEVELOPMENT.md    # Local development guide
+│   ├── ARCHITECTURE.md      # Architecture overview
+│   ├── DEVELOPMENT.md       # Local development guide
+│   └── TROUBLESHOOTING.md   # FAQ: wallet, Friendbot, Soroban RPC
 ```
 
 
@@ -55,6 +58,7 @@ For full local setup and contributor onboarding, see the [Development Guide](doc
 
 ## Getting Started
 
+> **New here? Stuck on wallet setup?** See the [Troubleshooting & FAQ guide](docs/TROUBLESHOOTING.md) for switching Freighter between Testnet/Futurenet, funding test accounts with Stellar Friendbot, and resolving Soroban RPC rate-limit or simulation-timeout errors.
 
 ### Docker (Recommended)
 
@@ -64,10 +68,30 @@ The fastest way to run the full stack locally:
 docker compose up --build
 ```
 
-This starts:
+This starts six services:
 
-- **Postgres** database on port `5433`
-- **Backend** API on port `3001`
+| Service | Host port | Purpose |
+| --- | --- | --- |
+| `postgres` | `5433` | PostgreSQL 16 database |
+| `pgbouncer` | `6432` | Transaction-pooling proxy in front of Postgres; the backend connects through it |
+| `redis` | `6379` | SSE pub/sub fan-out and shared rate-limit state |
+| `mock-soroban-rpc` | `8000` | Local JSON-RPC stub returning well-formed Soroban responses, so the indexer and simulation endpoints work without a live testnet |
+| `backend` | `3001` | Backend API (runs with `SANDBOX_MODE_ENABLED=true` against the mock RPC) |
+| `frontend` | `3000` | Next.js frontend, built and run in production mode |
+
+Make sure these host ports are free before starting, or remap them in `docker-compose.yml`.
+
+**Minimal invocation** — if you only need the API (for example, you run the frontend with `npm run dev`), start just the backend. Compose also starts the services it depends on (`postgres`, `pgbouncer`, `redis`, `mock-soroban-rpc`), but skips the frontend:
+
+```bash
+docker compose up --build backend
+```
+
+For a database only (e.g. running the backend directly on your machine):
+
+```bash
+docker compose up -d postgres
+```
 
 To run in detached mode:
 
@@ -269,6 +293,15 @@ Before your first change, run through the [Development Guide](docs/DEVELOPMENT.m
 
 For architecture details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### Architecture Decisions & Threat Model (auditor entry points)
+
+- **Architecture Decision Records:** [docs/adr/](docs/adr/) — TTL strategy, keeper-key deprecation, indexer cursor/dead-letter, SSE/WebSocket coexistence.
+- **STRIDE Threat Model:** [docs/security/STRIDE_THREAT_MODEL.md](docs/security/STRIDE_THREAT_MODEL.md) — trust boundaries, threat matrix, mitigations, residual risks.
+- **Batch Withdrawal Flow:** [docs/architecture/BATCH_WITHDRAWAL.md](docs/architecture/BATCH_WITHDRAWAL.md) — end-to-end sequence diagram for batch claims across frontend, SDK, contract, indexer, and SSE.
+- **TypeScript SDK (client-side signing):** [packages/flowfi-sdk/](packages/flowfi-sdk/) — standalone `FlowFiClient` for direct ledger access without the backend API.
+- **Preview environments:** every PR gets an ephemeral full-stack preview (migrated + seeded DB) via `.github/workflows/pr-preview.yml`; resources are torn down by `pr-preview-cleanup.yml` on close.
+- **Troubleshooting & FAQ:** [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — Freighter network switching, Friendbot funding, and Soroban RPC errors.
+
 ## Security
 
 If you discover a security vulnerability, please see our [Security Policy](SECURITY.md) for information on how to report it responsibly.
@@ -293,3 +326,4 @@ This project follows the [all-contributors](https://github.com/all-contributors/
 ## License
 
 MIT.
+# ci fix

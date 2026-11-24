@@ -11,6 +11,7 @@ import {
 const mocks = vi.hoisted(() => {
   const server = {
     getAccount: vi.fn(),
+    getHealth: vi.fn(),
     simulateTransaction: vi.fn(),
     sendTransaction: vi.fn(),
     getTransaction: vi.fn(),
@@ -99,12 +100,38 @@ describe('Soroban Service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isSimulationError.mockReturnValue(false);
+    mocks.server.getHealth.mockResolvedValue({ status: 'healthy' });
   });
 
   afterEach(() => {
     delete process.env.STREAM_CONTRACT_ID;
     delete process.env.KEEPER_SECRET_KEY;
     delete process.env.SOROBAN_RPC_URL;
+  });
+
+  describe('checkRpcHealth', () => {
+    it('caches successful RPC health checks for the TTL window', async () => {
+      const { checkRpcHealth, resetRpcHealthCache } = await importService();
+      resetRpcHealthCache();
+
+      await expect(checkRpcHealth(25)).resolves.toBe(true);
+      await expect(checkRpcHealth(25)).resolves.toBe(true);
+      expect(mocks.server.getHealth).toHaveBeenCalledTimes(1);
+    });
+
+    it('deduplicates concurrent health checks while a refresh is in flight', async () => {
+      const { checkRpcHealth, resetRpcHealthCache } = await importService();
+      resetRpcHealthCache();
+
+      const [first, second] = await Promise.all([
+        checkRpcHealth(25),
+        checkRpcHealth(25),
+      ]);
+
+      expect(first).toBe(true);
+      expect(second).toBe(true);
+      expect(mocks.server.getHealth).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('isStale', () => {
@@ -124,27 +151,49 @@ describe('Soroban Service', () => {
   });
 
   describe('submitContractCall', () => {
-    it('throws when simulation returns an error', async () => {
+    // The service signs with the server keeper key and nothing else: issue #1845
+    // removed the caller-supplied secret parameter.
+    const keeper = Keypair.random();
+    const keeperEnv = { KEEPER_SECRET_KEY: keeper.secret() };
+
+    beforeEach(() => {
+      mocks.server.getAccount.mockResolvedValue(new Account(keeper.publicKey(), '1'));
+    });
+
+    it('refuses to sign without a configured keeper key', async () => {
       const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+
+      await expect(
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })])
+      ).rejects.toThrow('KEEPER_SECRET_KEY not configured');
+      expect(mocks.server.getAccount).not.toHaveBeenCalled();
+    });
+
+    it('takes no wallet secret parameter', async () => {
+      const { submitContractCall } = await importService(keeperEnv);
+
+      // The arity is part of the contract: a third parameter would be a way
+      // back in for caller-supplied secret keys.
+      expect(submitContractCall.length).toBe(2);
+    });
+
+    it('throws when simulation returns an error', async () => {
+      const { submitContractCall } = await importService(keeperEnv);
       const simulation = { error: 'contract trapped' };
 
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulation);
       mocks.isSimulationError.mockReturnValue(true);
 
       await expect(
-        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })])
       ).rejects.toThrow('Simulation failed: contract trapped');
       expect(mocks.server.sendTransaction).not.toHaveBeenCalled();
     });
 
     it('throws when sendTransaction returns ERROR', async () => {
-      const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+      const { submitContractCall } = await importService(keeperEnv);
       const assembledTx = { sign: vi.fn() };
 
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
       mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
       mocks.server.sendTransaction.mockResolvedValue({
@@ -153,17 +202,19 @@ describe('Soroban Service', () => {
       });
 
       await expect(
-        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })])
       ).rejects.toThrow('Transaction failed: "tx failed"');
-      expect(assembledTx.sign).toHaveBeenCalledWith(sender);
+      expect(mocks.server.getAccount).toHaveBeenCalledWith(keeper.publicKey());
+      // A fresh Keypair is reconstructed from the keeper secret, so compare by
+      // public key rather than object identity.
+      const signedWith = assembledTx.sign.mock.calls[0]?.[0] as Keypair | undefined;
+      expect(signedWith?.publicKey()).toBe(keeper.publicKey());
     });
 
     it('polls getTransaction and returns tx hash when transaction succeeds on-chain', async () => {
-      const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+      const { submitContractCall } = await importService(keeperEnv);
       const assembledTx = { sign: vi.fn() };
 
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
       mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
       mocks.server.sendTransaction.mockResolvedValue({
@@ -177,8 +228,7 @@ describe('Soroban Service', () => {
 
       const result = await submitContractCall(
         'cancel_stream',
-        [nativeToScVal(1, { type: 'u64' })],
-        sender.secret()
+        [nativeToScVal(1, { type: 'u64' })]
       );
 
       expect(result).toBe('tx-hash-success');
@@ -186,12 +236,10 @@ describe('Soroban Service', () => {
     });
 
     it('polls across pending NOT_FOUND statuses until SUCCESS', async () => {
-      const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+      const { submitContractCall } = await importService(keeperEnv);
       const assembledTx = { sign: vi.fn() };
 
       process.env.SOROBAN_TX_POLL_INTERVAL_MS = '10';
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
       mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
       mocks.server.sendTransaction.mockResolvedValue({
@@ -210,8 +258,7 @@ describe('Soroban Service', () => {
 
       const result = await submitContractCall(
         'cancel_stream',
-        [nativeToScVal(1, { type: 'u64' })],
-        sender.secret()
+        [nativeToScVal(1, { type: 'u64' })]
       );
 
       expect(result).toBe('tx-hash-eventual');
@@ -220,11 +267,9 @@ describe('Soroban Service', () => {
     });
 
     it('throws when getTransaction returns FAILED after mempool acceptance', async () => {
-      const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+      const { submitContractCall } = await importService(keeperEnv);
       const assembledTx = { sign: vi.fn() };
 
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
       mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
       mocks.server.sendTransaction.mockResolvedValue({
@@ -237,18 +282,16 @@ describe('Soroban Service', () => {
       });
 
       await expect(
-        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })])
       ).rejects.toThrow('Transaction failed on-chain: tx-hash-failed');
     });
 
     it('throws when transaction confirmation times out', async () => {
-      const { submitContractCall } = await importService();
-      const sender = Keypair.random();
+      const { submitContractCall } = await importService(keeperEnv);
       const assembledTx = { sign: vi.fn() };
 
       process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS = '50';
       process.env.SOROBAN_TX_POLL_INTERVAL_MS = '10';
-      mocks.server.getAccount.mockResolvedValue(new Account(sender.publicKey(), '1'));
       mocks.server.simulateTransaction.mockResolvedValue(simulationSuccess(nativeToScVal(1)));
       mocks.assembleTransaction.mockReturnValue({ build: () => assembledTx });
       mocks.server.sendTransaction.mockResolvedValue({
@@ -261,7 +304,7 @@ describe('Soroban Service', () => {
       });
 
       await expect(
-        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })], sender.secret())
+        submitContractCall('cancel_stream', [nativeToScVal(1, { type: 'u64' })])
       ).rejects.toThrow(/Transaction confirmation timed out/);
 
       delete process.env.SOROBAN_TX_CONFIRMATION_TIMEOUT_MS;

@@ -4,6 +4,7 @@ target
 .env
 .DS_Store
 coverage
+e2e-results
 *.log
 
 # Soroban test runner — auto-generated, never commit
@@ -16,3 +17,7 @@ issue*.md
 pr*.md
 ISSUE_*.md
 PR_*.md
+*issue*.md
+docs-issue-*.md
+*.diff.txt
+pr_*_diff.txt

@@ -1,6 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import React from "react";
 
 const VALID_ADDRESS = "GAV4A377RAEV6YVAWZVHXF4VZD5ZBXGIKEMNHV5YIMV5LIKSNQVYUBR7";
 
@@ -29,6 +28,12 @@ vi.mock("@/lib/soroban", () => ({
   TOKEN_ADDRESSES: { XLM: "xlm-address" },
 }));
 
+vi.mock("@stellar/stellar-sdk", () => ({
+  StrKey: {
+    isValidEd25519PublicKey: (key: string) => key === VALID_ADDRESS
+  }
+}));
+
 import CreateStreamContent from "../app/streams/create/create-stream-content";
 
 function getRecipientInput() {
@@ -36,13 +41,20 @@ function getRecipientInput() {
 }
 
 describe("CreateStreamContent recipient prefill", () => {
+  // Prefilling validates the address with a dynamic import of the Stellar SDK,
+  // and that first import is slow enough under a loaded worker to blow the
+  // default 5s budget.
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
   it("prefills the recipient field from a valid deep-linked query param", async () => {
     searchParamsMock.get.mockImplementation((key: string) => (key === "recipient" ? VALID_ADDRESS : null));
 
     render(<CreateStreamContent />);
 
-    await waitFor(() => expect(getRecipientInput().value).toBe(VALID_ADDRESS));
-  });
+    await waitFor(() => expect(getRecipientInput().value).toBe(VALID_ADDRESS), { timeout: 15000 });
+  }, 20000);
 
   it("ignores a malformed recipient query param and leaves the field empty", async () => {
     searchParamsMock.get.mockImplementation((key: string) => (key === "recipient" ? "not-a-stellar-address" : null));

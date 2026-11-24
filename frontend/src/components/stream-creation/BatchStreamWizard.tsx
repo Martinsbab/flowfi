@@ -7,6 +7,7 @@ import { Stepper } from "../ui/Stepper";
 import { Button } from "../ui/Button";
 import {
   parseBatchCSV,
+  replaceBatchCSVRow,
   generateSampleCSV,
   formatAmount,
   type BatchValidationSummary,
@@ -19,6 +20,7 @@ import {
   getTokenAddress,
 } from "@/lib/soroban";
 import toast from "react-hot-toast";
+import { transactionSuccessToast } from "@/lib/transaction-feedback";
 import { useRouter } from "next/navigation";
 import {
   Upload,
@@ -123,18 +125,10 @@ export function BatchStreamWizard({
   const handleSaveEdit = useCallback(() => {
     if (editingEntryId === null || !validation) return;
 
-    // Update the CSV data
-    const lines = csvData.split(/\r?\n/);
-    const header = lines[0];
-    const dataLines = lines.slice(1).filter((line) => line.trim().length > 0);
-
-    if (editingEntryId > 0 && editingEntryId <= dataLines.length) {
-      dataLines[editingEntryId - 1] = `${editValues.recipient},${editValues.amount},${editValues.durationSeconds},${editValues.cliffSeconds}`;
-      const newCsv = [header, ...dataLines].join("\n");
+    const newCsv = replaceBatchCSVRow(csvData, editingEntryId, editValues);
+    if (newCsv !== csvData || validation.entries.some((e) => e.id === editingEntryId)) {
       setCsvData(newCsv);
-
-      const result = parseBatchCSV(newCsv);
-      setValidation(result);
+      setValidation(parseBatchCSV(newCsv));
       toast.success("Entry updated");
     }
 
@@ -181,7 +175,7 @@ export function BatchStreamWizard({
       }
 
       if (completed > 0) {
-        toast.success(`Successfully created ${completed} stream(s)`);
+        transactionSuccessToast(`Successfully created ${completed} stream(s)`);
         router.push("/dashboard");
       }
     } catch (err) {
@@ -582,5 +576,4 @@ export function BatchStreamWizard({
     </div>
   );
 }
-
 

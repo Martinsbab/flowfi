@@ -39,11 +39,20 @@ export function useStreamingAmount({
 
   useEffect(() => {
     let rafId: number | null = null;
+    // Guard against malformed rates so they never leak NaN into the rendered
+    // claimable amount.
+    const effectiveRate = Number.isFinite(ratePerSecond) && ratePerSecond > 0
+      ? ratePerSecond
+      : 0;
     const isStreaming =
       isActive &&
       !isPaused &&
-      ratePerSecond > 0 &&
+      effectiveRate > 0 &&
       maxClaimable > 0;
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let lastFrameTime = performance.now();
 
     const computeClaimable = () => {
@@ -57,7 +66,7 @@ export function useStreamingAmount({
         elapsedSinceStart - (startTime ? totalPausedDuration : 0) - currentPauseDuration,
       );
 
-      return clamp(effectiveElapsed * ratePerSecond, 0, maxClaimable);
+      return clamp(effectiveElapsed * effectiveRate, 0, maxClaimable);
     };
 
     claimableRef.current = computeClaimable();
@@ -76,7 +85,7 @@ export function useStreamingAmount({
       lastFrameTime = frameTime;
 
       const nextClaimable = isStreaming
-        ? clamp(claimableRef.current + ratePerSecond * deltaSeconds, 0, maxClaimable)
+        ? clamp(claimableRef.current + effectiveRate * deltaSeconds, 0, maxClaimable)
         : 0;
 
       claimableRef.current = nextClaimable;
@@ -97,7 +106,12 @@ export function useStreamingAmount({
       }
     };
 
-    if (isStreaming) {
+    if (reduceMotion && isStreaming) {
+      // #1198 — Respect prefers-reduced-motion: compute the accrued value once
+      // and skip the per-frame animation loop entirely.
+      claimableRef.current = computeClaimable();
+      setClaimable(claimableRef.current);
+    } else if (isStreaming) {
       rafId = requestAnimationFrame(tick);
     }
 

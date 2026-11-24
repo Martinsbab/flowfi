@@ -34,6 +34,8 @@ describe('fetchIncomingStreams', () => {
     isPaused: false,
     pausedAt: null,
     totalPausedDuration: 0,
+    createdAt: '2024-01-01T00:00:00Z',
+    updatedAt: '2024-01-01T00:00:00Z',
   };
 
   it('advances to the next endpoint on 404 and returns mapped results from the first 2xx', async () => {
@@ -55,7 +57,7 @@ describe('fetchIncomingStreams', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('db-id-1');
+    expect(result[0]!.id).toBe('db-id-1');
   });
 
   it('handles array response shapes correctly', async () => {
@@ -67,8 +69,8 @@ describe('fetchIncomingStreams', () => {
 
     const result = await fetchIncomingStreams(recipientPublicKey);
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe('db-id-1');
-    expect(result[1].id).toBe('db-id-2');
+    expect(result[0]!.id).toBe('db-id-1');
+    expect(result[1]!.id).toBe('db-id-2');
   });
 
   it('handles { data: [] } response shapes correctly', async () => {
@@ -80,7 +82,7 @@ describe('fetchIncomingStreams', () => {
 
     const result = await fetchIncomingStreams(recipientPublicKey);
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('db-id-1');
+    expect(result[0]!.id).toBe('db-id-1');
   });
 
   it('maps mapBackendStream output correctly: token label resolution + fallback', async () => {
@@ -98,12 +100,12 @@ describe('fetchIncomingStreams', () => {
     const result = await fetchIncomingStreams(recipientPublicKey);
 
     // Resolution based on TOKEN_ADDRESSES
-    expect(result[0].token).toBe('USDC');
-    expect(result[0].tokenAddress).toBe(TOKEN_ADDRESSES.USDC);
+    expect(result[0]!.token).toBe('USDC');
+    expect(result[0]!.tokenAddress).toBe(TOKEN_ADDRESSES.USDC);
 
     // Fallback format
-    expect(result[1].token).toBe('CBXHQZ...YYYY');
-    expect(result[1].tokenAddress).toBe(unknownTokenStream.tokenAddress);
+    expect(result[1]!.token).toBe('CBXHQZ...YYYY');
+    expect(result[1]!.tokenAddress).toBe(unknownTokenStream.tokenAddress);
   });
 
   it('maps mapBackendStream output correctly: toTokenAmount scaling', async () => {
@@ -116,11 +118,11 @@ describe('fetchIncomingStreams', () => {
     const result = await fetchIncomingStreams(recipientPublicKey);
     
     // 10000000 stroops = 1 token
-    expect(result[0].ratePerSecond).toBe(1);
+    expect(result[0]!.ratePerSecond).toBe(1);
     // 100000000 stroops = 10 tokens
-    expect(result[0].deposited).toBe(10);
+    expect(result[0]!.deposited).toBe(10);
     // 50000000 stroops = 5 tokens
-    expect(result[0].withdrawn).toBe(5);
+    expect(result[0]!.withdrawn).toBe(5);
   });
 
   it('maps mapBackendStream output correctly: status', async () => {
@@ -136,9 +138,9 @@ describe('fetchIncomingStreams', () => {
 
     const result = await fetchIncomingStreams(recipientPublicKey);
 
-    expect(result[0].status).toBe('Active');
-    expect(result[1].status).toBe('Paused');
-    expect(result[2].status).toBe('Completed');
+    expect(result[0]!.status).toBe('Active');
+    expect(result[1]!.status).toBe('Paused');
+    expect(result[2]!.status).toBe('Completed');
   });
 
   it('throws the last error when all candidates fail (non-404)', async () => {
@@ -189,5 +191,204 @@ describe('fetchIncomingStreams', () => {
     await assertion;
 
     vi.useRealTimers();
+  });
+
+  describe('pagination normalization', () => {
+    it('requests a single capped page with explicit sort metadata', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [] }),
+      });
+
+      await fetchIncomingStreams(recipientPublicKey);
+
+      const [requestUrl] = fetchMock.mock.calls[0]!;
+      const params = new URL(requestUrl as string).searchParams;
+      expect(params.get('recipient')).toBe(recipientPublicKey);
+      expect(params.get('sort')).toBe('lastUpdateTime');
+      expect(params.get('order')).toBe('desc');
+      expect(params.get('limit')).toBe('100');
+    });
+
+    it('normalizes an empty data page to an empty list', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [] }),
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('normalizes a bare empty array page to an empty list', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [],
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result).toEqual([]);
+    });
+
+    it('normalizes a payload without a data key to an empty list', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ meta: { total: 0, page: 1, limit: 100 } }),
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result).toEqual([]);
+    });
+
+    it('ignores pagination metadata sitting next to the records', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [mockStream],
+          meta: { total: 1, page: 1, limit: 100, totalPages: 1 },
+        }),
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe('db-id-1');
+      expect(result[0]!.status).toBe('Active');
+    });
+
+    it('defaults missing optional pause fields on malformed records', async () => {
+      const recordWithoutPauseFields = {
+        id: 'db-id-4',
+        streamId: 4,
+        sender: 'GBXHQYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYZZZZ',
+        recipient: 'GBXHQ...',
+        tokenAddress: TOKEN_ADDRESSES.USDC,
+        ratePerSecond: '10000000',
+        depositedAmount: '100000000',
+        withdrawnAmount: '50000000',
+        startTime: 1000,
+        lastUpdateTime: 2000,
+        isActive: false,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as BackendStream;
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [recordWithoutPauseFields] }),
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result[0]!.isPaused).toBe(false);
+      expect(result[0]!.pausedAt).toBeNull();
+      expect(result[0]!.totalPausedDuration).toBe(0);
+      expect(result[0]!.status).toBe('Completed');
+    });
+
+    it('maps zero-valued stroop amounts at the lower boundary', async () => {
+      const zeroedStream = {
+        ...mockStream,
+        ratePerSecond: '0',
+        depositedAmount: '0',
+        withdrawnAmount: '0',
+      };
+
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [zeroedStream],
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(result[0]!.ratePerSecond).toBe(0);
+      expect(result[0]!.deposited).toBe(0);
+      expect(result[0]!.withdrawn).toBe(0);
+    });
+  });
+
+  describe('authentication failures', () => {
+    it('surfaces a 401 from every candidate endpoint as a status error', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'Unauthorized' }),
+      });
+
+      await expect(fetchIncomingStreams(recipientPublicKey)).rejects.toThrow(
+        /Failed to fetch incoming streams \(401\)/
+      );
+      // Each candidate is tried exactly once; auth failures are not retried.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps a 403 distinct from a 404 so it is not treated as a missing endpoint', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: 'Forbidden' }),
+      });
+
+      const error = await fetchIncomingStreams(recipientPublicKey).catch(
+        (err: unknown) => err
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('(403)');
+      expect((error as Error).message).not.toContain('Endpoint not found');
+    });
+
+    it('fails over from a 401 on the first candidate to a 200 on the second', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'Unauthorized' }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [mockStream],
+      });
+
+      const result = await fetchIncomingStreams(recipientPublicKey);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe('db-id-1');
+    });
+
+    it('reports an expired session on a later call instead of returning stale data', async () => {
+      // Session still valid: the first listing succeeds.
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [mockStream],
+      });
+      await expect(fetchIncomingStreams(recipientPublicKey)).resolves.toHaveLength(1);
+
+      // Session expired: every candidate now rejects with 401.
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'Unauthorized' }),
+      });
+
+      await expect(fetchIncomingStreams(recipientPublicKey)).rejects.toThrow(
+        /Failed to fetch incoming streams \(401\)/
+      );
+      // 1 call for the successful listing + 2 candidates for the expired one.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
   });
 });

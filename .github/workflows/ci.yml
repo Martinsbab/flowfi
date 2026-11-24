@@ -13,9 +13,74 @@ on:
     branches: [main, develop]
 
 jobs:
-  frontend:
-    name: Frontend CI
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      packages: ${{ steps.filter.outputs.packages }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check changed files
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'scripts/**'
+              - '.github/workflows/**'
+            frontend:
+              - 'frontend/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            packages:
+              - 'packages/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+
+  docs-encoding:
+    name: Docs encoding check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Reject invalid UTF-8 and mojibake in markdown
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          status=0
+          while IFS= read -r -d '' f; do
+            if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
+              echo "::error file=$f::File is not valid UTF-8"
+              status=1
+            fi
+          done < <(git ls-files -z '*.md')
+          # Typical double-encoded UTF-8 (UTF-8 bytes mis-decoded as cp1252/latin-1),
+          # e.g. a curly quote or arrow turned into "A-tilde"/"a-circumflex + euro" runs.
+          if git ls-files -z '*.md' | xargs -0 grep -nP '\x{00C3}[\x{0080}-\x{00BF}\x{00A2}]|\x{00E2}\x{20AC}|\x{00C2}[\x{00A0}-\x{00BF}]'; then
+            echo "::error::Mojibake (double-encoded UTF-8) found in the markdown lines above"
+            status=1
+          fi
+          exit $status
+
+  packages:
+    name: Packages CI
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      needs.changes.outputs.packages == 'true'
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,32 +88,101 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: '.nvmrc'
+          cache: "npm"
+          cache-dependency-path: packages/*/package-lock.json
+
+      - name: Test @flowfi/sdk
+        working-directory: packages/flowfi-sdk
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      # @flowfi/react is not gated yet: tests/useClaimableBalance.test.tsx
+      # renders <ClaimableTicker stream={...} format={...} animated={...} />,
+      # while the component takes `baseBalance` and has no test id, so the
+      # suite fails against the current source rather than against a
+      # regression. Running it here would only report a known-broken baseline.
+
+  frontend:
+    name: Frontend CI
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      needs.changes.outputs.frontend == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
           cache: "npm"
           cache-dependency-path: package-lock.json
 
+      - name: Verify lockfile is in sync
+        run: npm ci --dry-run --ignore-scripts
+
       - name: Install dependencies
-        run: npm ci --include=optional
+        run: npm install --include=optional
 
       - name: Lint
         run: npm run lint
-        working-directory: frontend
-
-      - name: Install Rollup Native Binding
-        run: npm install @rollup/rollup-linux-x64-gnu --no-save
         working-directory: frontend
 
       - name: Run Frontend Tests
         run: npm run test:coverage
         working-directory: frontend
 
+      - name: Post frontend coverage summary on PR
+        if: >-
+          github.event_name == 'pull_request' && !cancelled() &&
+          hashFiles('frontend/coverage/coverage-summary.json') != ''
+        # Fork PRs get a read-only token; never fail the build over the comment.
+        continue-on-error: true
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          working-directory: frontend
+          name: Frontend coverage
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          file-coverage-mode: changes
+          vite-config-path: vitest.config.ts
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: frontend/coverage/lcov.info
+          flags: frontend
+          name: frontend-coverage
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Build
         run: npm run build
+        working-directory: frontend
+
+      - name: Check frontend bundle size
+        run: bash ./scripts/check-bundle-size.sh
         working-directory: frontend
 
   backend:
     name: Backend CI
     runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      needs.changes.outputs.backend == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
     services:
       postgres:
         image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
@@ -71,17 +205,21 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: '.nvmrc'
           cache: "npm"
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci --include=optional
+        run: npm install --include=optional
+
+      - name: Lint backend TypeScript
+        run: npm run lint
+        working-directory: backend
 
       - name: Setup Database
         run: |
           npx prisma generate --schema=prisma/schema.prisma
-          npx prisma db push --accept-data-loss --schema=prisma/schema.prisma
+          npx prisma migrate deploy --schema=prisma/schema.prisma
         working-directory: backend
         env:
           DATABASE_URL: postgresql://postgres:password@127.0.0.1:5432/flowfi_test
@@ -90,8 +228,14 @@ jobs:
         run: npm run build
         working-directory: backend
 
-      - name: Install Rollup Native Binding
-        run: npm install @rollup/rollup-linux-x64-gnu --no-save
+      - name: OpenAPI spec & API types drift check
+        run: |
+          cd backend
+          npm run codegen:openapi
+          cd ../frontend
+          npm run codegen:api-types
+          cd ..
+          git diff --exit-code -- backend/swagger/flowfi.openapi.json frontend/src/lib/api-types.generated.ts
 
       - name: Run Backend Tests
         run: |
@@ -101,6 +245,20 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:password@127.0.0.1:5432/flowfi_test
           NODE_ENV: test
+
+      - name: Post backend coverage summary on PR
+        if: >-
+          github.event_name == 'pull_request' && !cancelled() &&
+          hashFiles('backend/coverage/coverage-summary.json') != ''
+        continue-on-error: true
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          working-directory: backend
+          name: Backend coverage
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          file-coverage-mode: changes
+          vite-config-path: vitest.config.ts
 
       - name: Upload backend coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -142,7 +300,13 @@ jobs:
         run: |
           docker compose up -d postgres
           sleep 10
-          docker compose run --rm -e DATABASE_URL=postgresql://flowfi:flowfi_dev_password@postgres:5432/flowfi backend npx -y prisma db push --accept-data-loss
+          # The production image runs as the non-root `node` user and already
+          # ships the generated Prisma client (built in the builder stage and
+          # copied to dist/generated). Since Prisma 7, `db push` no longer runs
+          # `prisma generate` (and rejects the old `--skip-generate` flag), so
+          # only the schema push runs and nothing writes into the root-owned
+          # node_modules tree.
+          docker compose run --rm -e DATABASE_URL=postgresql://flowfi:flowfi_dev_password@postgres:5432/flowfi backend npx prisma migrate deploy
           docker compose up -d backend
           # Poll /health instead of a fixed sleep so cold-boot / Prisma-warmup
           # latency does not flake the Backend Docker Image CI.
@@ -174,7 +338,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspace: "contracts -> target"
+          workspaces: "contracts -> target"
 
       - name: Check Formatting
         run: cargo fmt --all -- --check
@@ -191,6 +355,11 @@ jobs:
       - name: Run Contract Tests
         run: cargo test
         working-directory: contracts
+
+      - name: Run Contract Benchmarks
+        run: cargo test --release --test '*' -- --nocapture --test-threads=1
+        working-directory: contracts
+        continue-on-error: true
 
       - name: Cache cargo-tarpaulin
         id: tarpaulin-cache
@@ -220,31 +389,58 @@ jobs:
 
       - name: Install Stellar CLI
         run: |
-          curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh -s -- --install-deps
-          echo "$HOME/.stellar-cli/bin" >> $GITHUB_PATH
+          set -euo pipefail
+          # Authenticate the release lookup through the runner's token. The
+          # upstream installer queries the unauthenticated GitHub API and can
+          # fail on shared-runner rate limits.
+          mkdir -p "$RUNNER_TEMP/stellar-cli"
+          stellar_cli_tag=$(gh release view --repo stellar/stellar-cli --json tagName --jq .tagName)
+          gh release download "$stellar_cli_tag" \
+            --repo stellar/stellar-cli \
+            --pattern 'stellar-cli-*-x86_64-unknown-linux-gnu.tar.gz' \
+            --dir "$RUNNER_TEMP/stellar-cli" \
+            --clobber
+          tar -xzf "$RUNNER_TEMP/stellar-cli/stellar-cli-"*.tar.gz \
+            -C "$RUNNER_TEMP/stellar-cli"
+          mkdir -p "$HOME/.stellar-cli/bin"
+          mv "$RUNNER_TEMP/stellar-cli/stellar" "$HOME/.stellar-cli/bin/stellar"
+          chmod +x "$HOME/.stellar-cli/bin/stellar"
+          echo "$HOME/.stellar-cli/bin" >> "$GITHUB_PATH"
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Optimize WASM files
+        # `stellar contract build` must run inside the cargo workspace, and
+        # recent CLI releases build for wasm32v1-none (optimized by default)
+        # rather than wasm32-unknown-unknown, so locate the output instead of
+        # assuming a directory.
+        working-directory: contracts
         run: |
           set -euo pipefail
 
-          # Target the precise release build directory
-          RELEASE_DIR="contracts/target/wasm32-unknown-unknown/release"
+          rustup target add wasm32v1-none
+          stellar contract build --optimize
 
-          # Use your strict selection logic to target un-optimized raw binaries only
-          WASMS=$(find "$RELEASE_DIR" -maxdepth 1 -type f -name "*.wasm" ! -name "*.optimized.wasm")
+          RELEASE_DIR="target/wasm32-unknown-unknown/release"
+          mkdir -p "$RELEASE_DIR"
 
-          if [ -z "$WASMS" ]; then
-            echo "Error: No raw WASM files found in $RELEASE_DIR"
+          src=""
+          for dir in target/wasm32v1-none/release target/wasm32-unknown-unknown/release; do
+            if [ -f "$dir/stream_contract.wasm" ]; then
+              src="$dir/stream_contract.wasm"
+              break
+            fi
+          done
+
+          if [ -z "$src" ]; then
+            echo "Error: stream_contract.wasm not found after stellar contract build"
             exit 1
           fi
 
-          for w in $WASMS; do
-            filename=$(basename "$w")
-            out="$RELEASE_DIR/${filename%.wasm}.optimized.wasm"
-            echo "Optimizing $filename -> $(basename "$out")"
-            stellar contract optimize --wasm "$w" --wasm-out "$out"
-          done
+          out="$RELEASE_DIR/stream_contract.optimized.wasm"
+          echo "Optimized $src -> $out"
+          cp "$src" "$out"
         shell: bash
 
       - name: Check WASM size budget
